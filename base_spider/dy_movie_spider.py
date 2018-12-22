@@ -62,25 +62,29 @@ def walk_mvlist(mvlist_link_tmpl, links_num=100):
 
 def get_mv_downlink(html):
     """解析html，获取电影下载链接"""
+    otherkeys = {'oncontextmenu', 'thunderrestitle', 'target', 'href', 'onclick', 'thunderpid', 'thundertype'}
     soup = BeautifulSoup(html, "html5lib", from_encoding="gb18030")
-    kw_tag = soup.find('meta', attrs={"name": 'keywords'})
-    mv_name = kw_tag['content']
-    mv_name = mv_name[:mv_name.rfind(u"下载")]
-    links = []
-    for tag in soup.find_all('table', align='center'):
-        dlink = tag.find('a').get_text()
-        if dlink:
-            links.append(dlink)
+    a_tags = soup.select('#Zoom > span > table > tbody > tr > td > a')
+    def _parse_link(tag):
+        attr = set(tag.attrs.keys()) - otherkeys
+        if len(attr) > 0:
+            attr = attr.pop()
+            return tag.attrs.get(attr)
+        else:
+            return None
+    links = map(_parse_link, a_tags)
+    links = filter(lambda x: bool(x), links)
     return links
 
 
-def walk_mvdetail(mvds):
-    """遍历电影详情，得到电影对应的下载链接"""
+def walk_mvdetail(mvds, driver):
+    """遍历电影详情链接，获得电影下载链接"""
     mvs = []
     for mdl in mvds:
-        html = get_html_content(mdl[1])
+        # 打开电影详情页面
+        driver.get(mdl[1])
         # 解析电影详情页面，获取网站下载url
-        links = get_mv_downlink(html)
+        links = get_mv_downlink(driver.page_source)
         print '\033[1;33;44m %s \033[0m' % links
         if links:
             mvs.append((mdl[0], links))
@@ -99,13 +103,28 @@ def save_file(mvs, fp='./', fn=u'电影列表.txt'):
     return fpname
 
 
+def create_webdriver():
+    """创建一个Chrome web driver实例"""
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    options = Options()
+    # 加上这个属性来规避bug
+    options.add_argument('--disable-gpu')
+    # 不加载图片, 提升速度
+    options.add_argument('blink-settings=imagesEnabled=false')
+    # 浏览器不提供可视化页面
+    options.add_argument('--headless')
+    return webdriver.Chrome(chrome_options=options)
+
+
 # 电影网站
 TARGET_SITE = 'http://www.dytt8.net'
 def spider_main():
     # 电影列表通配链接
     mvlist_url = TARGET_SITE + "/html/gndy/dyzz/list_23_%d.html"
     mvds = walk_mvlist(mvlist_url, 50)
-    mvs = walk_mvdetail(mvds)
+    driver = create_webdriver()
+    mvs = walk_mvdetail(mvds, driver)
     print u'\033[1;33;44m保存: %s \033[0m' % save_file(mvs)
 
 
