@@ -6,7 +6,6 @@
 @Author: 青椒肉丝
 '''
 from BaseHTTPServer import HTTPServer
-import csv
 import datetime
 import json
 import hashlib
@@ -16,9 +15,6 @@ import io
 import os
 import urllib
 from SimpleHTTPServer import SimpleHTTPRequestHandler
-import sys
-reload(sys)
-sys.setdefaultencoding("utf-8")
 import click
 
 
@@ -31,14 +27,12 @@ class DataStorge(multiprocessing.Process):
     1. 将爬取信息添加存储器;
     2. 将爬取信息以本地文件形式输出,格式CSV.
     """
-    def __init__(self, rqueue,
-                    table_header=['movie_name', 'downlink'],
-                    path='./'):
+    def __init__(self, rqueue, path='./'):
         multiprocessing.Process.__init__(self)
-        self._header = table_header
         self._mv_downlinks = []
         self._rqueue = rqueue
         self._interval = 3
+        self.batch_num = 100
         self.path = path
         echo("storage server is running")
         echo("output dir is " + path)
@@ -46,7 +40,7 @@ class DataStorge(multiprocessing.Process):
     def add_mvdownlink(self, data):
         """将爬取信息添加存储器"""
         self._mv_downlinks.append(data)
-        if self.downlink_size() % 10 == 0:
+        if self.downlink_size() % self.batch_num == 0:
             echo("save url number is " + str(self.downlink_size())) 
 
     def downlink_size(self):
@@ -56,15 +50,15 @@ class DataStorge(multiprocessing.Process):
         """电影下载列表以csv格式输出"""
         fname = "movie_{}.csv".format(datetime.datetime.now().strftime('%Y%m%d%H%M%S'))
         with open(os.path.join(self.path, fname), 'w') as f:
-            fcsv = csv.writer(f)
-            fcsv.writerow(self._header)
-            fcsv.writerows(map(lambda x: (x.get("mv_name"), x.get("links")), self._mv_downlinks))
+            f.write('电影名称,电影链接\r\n')
+            rows = map(lambda x: "%s, %s" % (x[0], ",".join(x[-1])), self._mv_downlinks)
+            f.write("\r\n".join(rows))
         echo(fname + " has saved")
         self._mv_downlinks = []
 
     def run(self):
         while 1:
-            if self.downlink_size() >= 100:
+            if self.downlink_size() >= self.batch_num:
                 self.output_data()
             if not self._rqueue.empty():
                 mvinfo = self._rqueue.get()
@@ -156,7 +150,7 @@ class SpiderMain(SimpleHTTPRequestHandler):
             if data.get('mv_name', ""):
                 # 更新结果队列
                 data.pop("url")
-                SpiderMain.rqueue.put(data)
+                SpiderMain.rqueue.put((data.get('mv_name'), data.get('links').split(',')))
             self.send(json.dumps(SpiderMain.OK_MSG))
         else:
             self.send(json.dumps(SpiderMain.ERROR_MSG))
@@ -180,7 +174,9 @@ class SpiderMain(SimpleHTTPRequestHandler):
         f.close()
 
 
-def url_update(base_url, tqueue, uqueue,  page_index=1):
+def url_update(base_url, tqueue, uqueue,
+                page_index=1, max_page=100, interval=3,
+                cache_num = 30):
     """调度管理器下，负责URL同步
     1. 从url队列获取url，并添加到url管理器；
     2. 从url管理器获取待爬取url，并添加到任务队列
@@ -193,19 +189,24 @@ def url_update(base_url, tqueue, uqueue,  page_index=1):
     url_manager.add_url(base_url + mvlist_path.format(page_index))
     url = url_manager.get_url()
     tqueue.put(url)
+    cache_num = max_page if cache_num > max_page else cache_num
     while 1:
+        if tqueue.qsize() > cache_num:
+            time.sleep(interval)
+            continue
         echo("handled url is {} and rest url is {}".format(url_manager.handle_url_num(),
                                                         url_manager.rest_url_num()))
         while not uqueue.empty():
             url = uqueue.get()
             url_manager.add_url(url)
-        while tqueue.empty() and url_manager.rest_url_num() != 0:
+        while tqueue.qsize() <= cache_num and url_manager.rest_url_num() != 0:
             tqueue.put(url_manager.get_url())
-        if url_manager.rest_url_num() == 0:
+        if page_index < max_page:
             page_index += 1
             echo(str(page_index) + " url is " + base_url + mvlist_path.format(page_index))
             url_manager.add_url(base_url + mvlist_path.format(page_index))
-        time.sleep(10)
+        else:
+            time.sleep(interval)
 
 #
 # 初始化通讯队列：
@@ -221,7 +222,7 @@ url_queue = multiprocessing.Queue()
 # 指定端口
 @click.option("--port", "-p", type=int, default=8001, help="start spider manager server, set port!")
 def crawler(port):
-    ds = DataStorge(result_queue, [u'电影名称', u'下载链接'], './')
+    ds = DataStorge(result_queue, './')
     ds.daemon = True
     ds.start()
     SpiderMain.uqueue = url_queue
@@ -229,7 +230,8 @@ def crawler(port):
     SpiderMain.rqueue = result_queue
     # url同步操作，与URL管理器通讯，获取待爬取url，更新URL管理器中的url
     updater = multiprocessing.Process(target=url_update,
-                                        args=('http://www.dytt8.net', task_queue, url_queue, 1,))
+                                        args=('http://www.dytt8.net', task_queue,
+                                                url_queue, 1, 50))
     updater.daemon = True
     updater.start()
     try:
