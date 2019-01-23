@@ -1,5 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+'''
+@Description: 分布式网络爬虫，爬虫调度管理端(redis改进版)
+@Site: www.3sanrenxing.com
+@Author: 青椒肉丝
+'''
 import datetime
 import json
 import hashlib
